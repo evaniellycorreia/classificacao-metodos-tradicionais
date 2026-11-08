@@ -1,0 +1,161 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,margin=2cm]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazilian]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx,booktabs,float}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage[colorlinks=true,urlcolor=blue,linkcolor=black]{hyperref}
+\usepackage{microtype}
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{1em}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\arraystretch}{1.05}
+\graphicspath{{./}{results/}}
+
+\title{\vspace{-1.2cm}\textbf{Mini-projeto: classifica\c{c}\~ao com m\'etodos tradicionais I}\\[2pt]
+\large SVM, regress\~ao log\'istica e $k$-NN em dados de diabetes (CDC) e \emph{churn} de telecomunica\c{c}\~oes}
+\author{Evanielly Correia}
+\date{Novembro de 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Comparam-se SVM (linear e com n\'ucleo gaussiano), regress\~ao log\'istica e $k$ vizinhos mais pr\'oximos em dois problemas bin\'arios desbalanceados: diabetes (CDC/OpenML 46841, 253\,680 pessoas) e \emph{churn} de clientes de telecomunica\c{c}\~oes (Kaggle, 7\,043 clientes). Os hiperpar\^ametros foram escolhidos por valida\c{c}\~ao cruzada no treino e a avalia\c{c}\~ao foi feita em um teste independente. Tamb\'em foram implementadas em \texttt{torch} a SVM linear e a regress\~ao log\'istica. C\'odigo: \url{https://github.com/evaniellycorreia/classificacao-metodos-tradicionais}.
+\end{abstract}
+
+\section{Dados e m\'etricas de avalia\c{c}\~ao}
+\textbf{CDC Diabetes} (OpenML 46841): indicadores de sa\'ude e estilo de vida do BRFSS 2014; 253\,680 pessoas, 21 atributos (bin\'arios e ordinais, sem valores ausentes) e alvo \texttt{Diabetes\_binary}, com 13,9\% de positivos. \textbf{Telco Churn} (Kaggle, \texttt{blastchar/telco-customer-churn}): 7\,043 clientes, 19 atributos num\'ericos e categ\'oricos (\texttt{customerID} removido) e alvo \texttt{Churn}, com 26,5\% de positivos; os 11 valores ausentes de \texttt{TotalCharges} correspondem a \texttt{tenure}=0 e foram preenchidos com 0. A Tabela~\ref{tab:desc} resume algumas caracter\'isticas.
+
+\begin{table}[H]
+\centering\footnotesize
+\caption{Resumo estat\'istico de atributos selecionados.}\label{tab:desc}
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+Conjunto & Atributo & M\'edia & Vari\^ancia & M\'in. & M\'ax. \\
+\midrule
+CDC Diabetes & BMI & 28,38 & 43,67 & 12,00 & 98,00 \\
+ & GenHlth & 2,51 & 1,14 & 1,00 & 5,00 \\
+ & MentHlth & 3,18 & 54,95 & 0,00 & 30,00 \\
+ & PhysHlth & 4,24 & 76,00 & 0,00 & 30,00 \\
+ & Age & 8,03 & 9,33 & 1,00 & 13,00 \\
+ & Income & 6,05 & 4,29 & 1,00 & 8,00 \\
+\midrule
+Telco Churn & tenure & 32,37 & 603,17 & 0,00 & 72,00 \\
+ & MonthlyCharges & 64,76 & 905,41 & 18,25 & 118,75 \\
+ & TotalCharges & 2280 & 5138357 & 0,00 & 8685 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\textbf{Protocolo.} Divis\~ao estratificada 80/20 (semente 42). A valida\c{c}\~ao cruzada estratificada ($k=3$ no CDC, $k=5$ no Telco) foi usada s\'o no treino, via \texttt{GridSearchCV} com $F_1$ como crit\'erio. Padroniza\c{c}\~ao (e \emph{one-hot} no Telco) \'e ajustada dentro de cada \emph{fold}, sem vazamento. SVM e regress\~ao log\'istica usam \texttt{class\_weight="balanced"}; o $k$-NN n\~ao tem essa op\c{c}\~ao. No CDC, como o \texttt{SVC} escala mal com $n$, a SVM \'e ajustada em uma subamostra estratificada de 10\,000 exemplos de treino e o $k$ do $k$-NN \'e escolhido em 30\,000 exemplos (o modelo final usa todo o treino). Reportam-se acur\'acia, precis\~ao, revoca\c{c}\~ao, $F_1$ e matriz de confus\~ao (classe positiva = doen\c{c}a/\emph{churn}).
+
+\textbf{Por que n\~ao usar s\'o a acur\'acia.} Um classificador que sempre prev\^e a classe majorit\'aria tem acur\'acia de 0,861 no CDC e 0,735 no Telco, sem detectar nenhum positivo. No CDC, todos os modelos t\^em acur\'acia (0,71--0,81) \emph{inferior} a esse trivial, embora detectem 76--80\% dos casos (exceto o $k$-NN). A acur\'acia ignora o custo assim\'etrico dos erros e \'e dominada pela classe majorit\'aria; por isso o foco \'e $F_1$/revoca\c{c}\~ao.
+
+\section{M\'aquina de vetores de suporte}
+\textbf{M\'etodo.} A SVM busca o hiperplano $\mathbf{w}^\top\mathbf{x}+b=0$ de \emph{margem m\'axima} $2/\lVert\mathbf{w}\rVert$. Com margem suave, minimiza-se $\tfrac12\lVert\mathbf{w}\rVert^2 + C\sum_i \max(0,1-y_i f(\mathbf{x}_i))$. Os \emph{vetores de suporte} (pontos sobre ou dentro da margem, ou classificados errado) s\~ao os \'unicos com multiplicador $\alpha_i>0$ e determinam a solu\c{c}\~ao. Com o n\'ucleo gaussiano $k(\mathbf{x},\mathbf{x}')=e^{-\gamma\lVert \mathbf{x}-\mathbf{x}'\rVert^2}$ a fronteira \'e n\~ao linear. O m\'etodo \'e sens\'ivel \`a escala (a margem e o n\'ucleo dependem de dist\^ancias), logo padroniza-se. No treino ajustam-se $\mathbf{w},b$ (ou $\alpha_i,b$ no dual); $C$ e $\gamma$ s\~ao hiperpar\^ametros escolhidos por valida\c{c}\~ao cruzada.
+
+\textbf{Implementa\c{c}\~ao e experimento.} \texttt{sklearn.svm.SVC} com n\'ucleo linear ($C\in\{10^{-3},\dots,1\}$) e RBF ($C\in\{0{,}1;1;10\}$, $\gamma\in[3{\cdot}10^{-4},0{,}3]$, sete valores). Hiperpar\^ametros escolhidos na Tabela~\ref{tab:params}; m\'etricas de teste na Tabela~\ref{tab:metrics}. No CDC, as duas SVM s\~ao praticamente equivalentes ($F_1$ 0,435 e 0,434; revoca\c{c}\~ao $\approx$0,80, precis\~ao $\approx$0,30): o $\gamma$ pequeno escolhido torna o n\'ucleo quase linear, e as classes se sobrep\~oem muito (Figura~\ref{fig:fronteiras}), de modo que o espa\c{c}o extra do n\'ucleo n\~ao ajuda. A baixa precis\~ao decorre do balanceamento de classes: troca-se precis\~ao por revoca\c{c}\~ao (cerca de 13\,000 falsos positivos para 5\,600 verdadeiros). No Telco, o n\'ucleo RBF melhora o $F_1$ (0,622 contra 0,608) e a acur\'acia (0,757 contra 0,723), mas com sinal de leve \emph{overfitting} ($F_1$ de treino 0,659).
+
+\textbf{Vers\~ao em \texttt{torch}.} A SVM linear foi reescrita na forma primal (perda \emph{hinge} ponderada, mesmo objetivo $\tfrac1n\sum_i c_i\ell_i+\tfrac{1}{2Cn}\lVert\mathbf{w}\rVert^2$, otimizador Adam, 500 \'epocas, \emph{full-batch}) com o $C$ do \texttt{GridSearchCV}. No Telco as previs\~oes coincidem 100\% com as do \texttt{sklearn}; no CDC, 97,4\%, pois o \texttt{SVC} usou 10\,000 exemplos e o \texttt{torch} o treino completo; as m\'etricas ficaram praticamente iguais (diferen\c{c}a de at\'e 0,001 no $F_1$).
+
+\begin{table}[H]
+\centering\footnotesize
+\caption{Hiperpar\^ametros escolhidos e $F_1$ m\'edio de valida\c{c}\~ao cruzada.}\label{tab:params}
+\begin{tabular}{@{}lllll@{}}
+\toprule
+ & \multicolumn{2}{c}{CDC} & \multicolumn{2}{c}{Telco} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Modelo & Hiperpar. & $F_1$ & Hiperpar. & $F_1$ \\
+\midrule
+SVM linear & $C=1$ & 0,437 & $C=0{,}001$ & 0,618 \\
+SVM RBF & $C=10$, $\gamma=0{,}001$ & 0,439 & $C=0{,}1$, $\gamma=0{,}3$ & 0,628 \\
+Reg. logística & $C=0{,}0001$ & 0,443 & $C=0{,}1$ & 0,629 \\
+k-NN & $k=1$ & 0,294 & $k=31$ & 0,598 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering\footnotesize
+\setlength{\tabcolsep}{4.5pt}
+\caption{M\'etricas no conjunto de teste (e $F_1$ no treino). As linhas \texttt{torch} s\~ao a implementa\c{c}\~ao extra.}\label{tab:metrics}
+\begin{tabular}{@{}lccccc@{\hspace{14pt}}ccccc@{}}
+\toprule
+ & \multicolumn{5}{c}{CDC Diabetes} & \multicolumn{5}{c}{Telco Churn} \\
+\cmidrule(r{14pt}){2-6}\cmidrule(l){7-11}
+Modelo & Acur. & Prec. & Rev. & $F_1$ & $F_1$ trein. & Acur. & Prec. & Rev. & $F_1$ & $F_1$ trein. \\
+\midrule
+SVM linear & 0,714 & 0,300 & 0,790 & 0,435 & 0,438 & 0,723 & 0,487 & 0,807 & 0,608 & 0,620 \\
+SVM RBF & 0,709 & 0,298 & 0,799 & 0,434 & 0,442 & 0,757 & 0,530 & 0,751 & 0,622 & 0,659 \\
+Reg. logística & 0,732 & 0,310 & 0,756 & 0,440 & 0,442 & 0,742 & 0,510 & 0,786 & 0,618 & 0,634 \\
+k-NN & 0,809 & 0,316 & 0,318 & 0,317 & 0,975 & 0,783 & 0,590 & 0,594 & 0,592 & 0,626 \\
+SVM linear (torch) & 0,715 & 0,301 & 0,789 & 0,435 & 0,434 & 0,723 & 0,487 & 0,807 & 0,608 & 0,620 \\
+Reg. logística (torch) & 0,732 & 0,310 & 0,756 & 0,440 & 0,442 & 0,742 & 0,510 & 0,786 & 0,618 & 0,634 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Regress\~ao log\'istica}
+\textbf{M\'etodo.} Modela-se $P(y=1\mid\mathbf{x})=\sigma(\mathbf{w}^\top\mathbf{x}+b)$, $\sigma(z)=1/(1+e^{-z})$, e ajusta-se por m\'axima verossimilhan\c{c}a, i.e. minimizando a entropia cruzada $-\sum_i[y_i\log p_i+(1-y_i)\log(1-p_i)]+\tfrac1{2C}\lVert\mathbf{w}\rVert^2$. Com $K$ classes, o an\'alogo \'e o classificador \emph{softmax}, $p_k=e^{z_k/T}/\sum_j e^{z_j/T}$; para $K=2$ ele se reduz \`a sigm\'oide da diferen\c{c}a dos \emph{logits}. A temperatura $T$ controla a concentra\c{c}\~ao: $T\to0$ aproxima o $\arg\max$ (distribui\c{c}\~ao quase \emph{one-hot}) e $T\to\infty$ a uniforme. Ela n\~ao altera o $\arg\max$, apenas a confian\c{c}a/calibra\c{c}\~ao; na regress\~ao log\'istica $T$ \'e absorvida na escala de $\mathbf{w}$.
+
+\textbf{Implementa\c{c}\~ao e experimento.} \texttt{sklearn.linear\_model.LogisticRegression}, $C\in\{10^{-4},\dots,10^{2}\}$. No CDC obt\'em-se $F_1=0{,}440$ e, no Telco, $0{,}618$. A regress\~ao log\'istica \'e t\~ao boa quanto as SVM (inclusive a RBF) com custo de treino muito menor (3\,s contra 74\,s no CDC, ambos incluindo a busca de hiperpar\^ametros e a SVM em apenas 5\% dos dados). No CDC o $C$ escolhido ($10^{-4}$) est\'a no extremo da grade, mas o $F_1$ de valida\c{c}\~ao \'e praticamente constante nessa regi\~ao (0,443). A vers\~ao em \texttt{torch} (entropia cruzada ponderada) reproduz o \texttt{sklearn}: as m\'etricas s\~ao iguais e as previs\~oes coincidem em 100\% (CDC) e 99,9\% (Telco).
+
+
+\section{$k$ vizinhos mais pr\'oximos}
+\textbf{M\'etodo.} Para um ponto novo, o $k$-NN encontra os $k$ exemplos de treino mais pr\'oximos (dist\^ancia euclidiana) e prev\^e a classe majorit\'aria entre eles. N\~ao h\'a fase de treino: o modelo apenas armazena os dados, e todo o custo (busca de vizinhos, $O(nd)$ por consulta em for\c{c}a bruta, al\'em da mem\'oria) \'e transferido para a predi\c{c}\~ao. \'E muito sens\'ivel \`a escala dos atributos (atributos de maior amplitude dominam a dist\^ancia), por isso padroniza-se. Na alta dimens\~ao ocorre a \emph{maldi\c{c}\~ao da dimensionalidade}: as dist\^ancias se concentram, o vizinho mais pr\'oximo e o mais distante ficam quase equidistantes e a vizinhan\c{c}a deixa de ser informativa; o n\'umero de dados necess\'ario cresce exponencialmente com $d$.
+
+\textbf{Implementa\c{c}\~ao e experimento.} \texttt{KNeighborsClassifier} com $k\in\{1,3,5,11,21,31,51,101\}$ por \texttt{GridSearchCV}. No CDC, escolheu-se $k=1$: como n\~ao h\'a pondera\c{c}\~ao de classes, o $F_1$ da classe rara favorece $k$ pequeno. O resultado \'e \emph{overfitting} extremo: $F_1$ de treino 0,975 (cada ponto \'e o seu pr\'oprio vizinho) contra 0,317 no teste, com revoca\c{c}\~ao de apenas 0,318, \emph{pior} que os outros m\'etodos apesar da maior acur\'acia (0,809). No Telco, $k=31$ resulta em $F_1$ de treino 0,626 e teste 0,592; a acur\'acia (0,783) \'e a maior, mas \`a custa de revoca\c{c}\~ao menor (0,594), outro exemplo do problema da acur\'acia.
+
+
+\textbf{Fronteiras.} No CDC as classes se sobrep\~oem fortemente na proje\c{c}\~ao e a fronteira linear (SVM e regress\~ao log\'istica) \'e quase id\^entica \`a da RBF, ao passo que o $k$-NN produz regi\~oes fragmentadas, sinal de alta vari\^ancia. No Telco, as fronteiras lineares separam a maior parte dos positivos; a RBF cria uma regi\~ao curva ao redor do grupo de \emph{churn}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{boundaries.png}
+\caption{Regi\~oes de decis\~ao (azul: classe 0; vermelho: classe 1) no plano das duas primeiras componentes principais, que explicam apenas 25\% (CDC) e 48\% (Telco) da vari\^ancia. Os pontos s\~ao 500 por classe sorteados de todo o conjunto. Cada classificador foi reajustado em 2 dimens\~oes (5\,000 pontos de treino) com os hiperpar\^ametros da Tabela~\ref{tab:params}; portanto a figura \'e uma ilustra\c{c}\~ao qualitativa, n\~ao a fronteira real em alta dimens\~ao.}\label{fig:fronteiras}
+\end{figure}
+
+
+\section{Compara\c{c}\~ao}
+A Figura~\ref{fig:painel} re\'une, em um painel, as m\'etricas e as matrizes de confus\~ao de todos os modelos. Pelo $F_1$ de teste, o melhor m\'etodo \'e a regress\~ao log\'istica no CDC (0,440) e a SVM RBF no Telco (0,622).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{panel.png}
+\caption{Painel comparativo: m\'etricas de teste (acima) e matrizes de confus\~ao (abaixo; cores normalizadas por linha, n\'umeros s\~ao contagens) para os seis modelos nos dois conjuntos.}\label{fig:painel}
+\end{figure}
+
+\textbf{A diferen\c{c}a \'e significativa?} Usaram-se dois crit\'erios sobre o mesmo teste (Tabela~\ref{tab:signif}): intervalo de confian\c{c}a de 95\% do $F_1$ por \emph{bootstrap} (1\,000 reamostragens) e o teste de McNemar (exato) contra o melhor modelo, que compara os \emph{erros} pareados, ou seja, a acur\'acia. \emph{(i)} No CDC os ICs da regress\~ao log\'istica e das duas SVM se sobrep\~oem quase totalmente: n\~ao h\'a evid\^encia de diferen\c{c}a em $F_1$. O McNemar \'e significativo porque o teste tem 50\,736 exemplos e a regress\~ao log\'istica opera em outro ponto precis\~ao/revoca\c{c}\~ao (acur\'acia 0,732 contra 0,709--0,714), \'e uma diferen\c{c}a estat\'istica, mas pr\'atica pequena. O $k$-NN \'e claramente pior ($F_1$ 0,317, IC disjunto). \emph{(ii)} No Telco, os ICs s\~ao largos (teste com 1\,409 exemplos) e a SVM RBF, a regress\~ao log\'istica e a SVM linear n\~ao s\~ao distingu\'iveis em $F_1$; o McNemar da RBF contra a regress\~ao log\'istica ($p=0{,}015$) n\~ao resiste a uma corre\c{c}\~ao de m\'ultiplas compara\c{c}\~oes, e s\'o a SVM linear e o $k$-NN ficam abaixo da RBF de forma consistente ($p<0{,}006$). \textbf{Conclus\~ao:} modelos lineares e SVM RBF empatam; o $k$-NN \'e o pior no CDC. Como a regress\~ao log\'istica \'e a mais simples e r\'apida, \'e a escolha recomendada.
+
+\begin{table}[H]
+\centering\footnotesize
+\setlength{\tabcolsep}{3pt}
+\caption{IC 95\% do $F_1$ (\emph{bootstrap}) e valor-$p$ do teste de McNemar contra o melhor modelo de cada conjunto (--).}\label{tab:signif}
+\begin{tabular}{@{}lllll@{}}
+\toprule
+ & \multicolumn{2}{c}{CDC} & \multicolumn{2}{c}{Telco} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Modelo & IC $F_1$ & $p$ & IC $F_1$ & $p$ \\
+\midrule
+SVM linear & [0,427; 0,442] & $<10^{-4}$ & [0,571; 0,641] & $<10^{-4}$ \\
+SVM RBF & [0,426; 0,441] & $<10^{-4}$ & [0,585; 0,659] & -- \\
+Reg. logística & [0,432; 0,448] & -- & [0,581; 0,653] & 0,0154 \\
+k-NN & [0,307; 0,327] & $<10^{-4}$ & [0,547; 0,632] & 0,0055 \\
+SVM linear (torch) & [0,428; 0,442] & $<10^{-4}$ & [0,570; 0,641] & $<10^{-4}$ \\
+Reg. logística (torch) & [0,432; 0,448] & 1,0000 & [0,583; 0,651] & 0,0154 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Limita\c{c}\~oes.} Uma \'unica divis\~ao treino/teste; o ``melhor'' modelo foi escolhido no pr\'oprio teste; os testes de McNemar n\~ao foram corrigidos para m\'ultiplas compara\c{c}\~oes; algumas escolhas de hiperpar\^ametros ficaram na borda da grade (ampliar a grade alterou o $F_1$ de valida\c{c}\~ao em no m\'aximo 0,012) e SVM e $k$-NN no CDC foram ajustados em subamostras. Replicar com v\'arias divis\~oes ou valida\c{c}\~ao cruzada repetida daria conclus\~oes mais robustas.
+
+
+
+\section{Reprodutibilidade}
+Todo o c\'odigo (\texttt{src/experiment.py}, \texttt{src/torch\_models.py}) e as instru\c{c}\~oes est\~ao no reposit\'orio \url{https://github.com/evaniellycorreia/classificacao-metodos-tradicionais}; \texttt{python src/experiment.py} regenera as tabelas, figuras e \texttt{results.json} deste relat\'orio (semente 42).
+
+\end{document}
